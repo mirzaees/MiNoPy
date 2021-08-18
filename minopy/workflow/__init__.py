@@ -15,6 +15,9 @@ warnings.filterwarnings("ignore")
 mpl_logger = logging.getLogger('matplotlib')
 mpl_logger.setLevel(logging.WARNING)
 
+fi_logger = logging.getLogger('fiona._env')
+fi_logger.setLevel(logging.DEBUG)
+
 sg_logger = logging.getLogger('shapely.geos')
 sg_logger.setLevel(logging.WARNING)
 
@@ -25,9 +28,12 @@ as_logger.setLevel(logging.WARNING)
 __all__ = [
     'load_slc',
     'generate_interferograms',
+    'generate_unwrap_mask',
     'phase_inversion',
-    'load_int',
+    'load_ifgram',
     'unwrap_minopy',
+    'phase_to_range',
+    'find_short_baselines',
     'version',
 ]
 

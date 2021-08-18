@@ -4,7 +4,6 @@ cimport cython
 import os
 import numpy as np
 cimport numpy as cnp
-#from libc.stdio cimport printf
 from scipy import linalg as LA
 from scipy.linalg import lapack as lap
 from libc.math cimport sqrt, log, exp, isnan
@@ -12,8 +11,7 @@ from scipy.optimize import minimize
 from skimage.measure._ccomp import label_cython as clabel
 from scipy.stats import anderson_ksamp, ttest_ind
 from mintpy.utils import ptime
-#from cython.parallel import prange
-#from libcpp.string cimport string
+import time
 
 
 cdef extern from "complex.h":
@@ -22,8 +20,9 @@ cdef extern from "complex.h":
     float crealf(float complex z)
     float cimagf(float complex z)
     float cabsf(float complex z)
+    float sqrtf(float z)
     float complex clogf(float complex z)
-    float complex csqrtf(float complex z)
+    #float complex csqrtf(float complex z)
     float cargf(float complex z)
     float fmaxf(float x, float y)
     float fminf(float x, float y)
@@ -270,17 +269,23 @@ cdef inline float complex[::1] PTA_L_BFGS_cy(float complex[:, ::1] coh0, float[:
 
     return vec
 
-
-cdef inline float complex[:,::1] outer_product(float complex[::1] x, float complex[::1] y):
+cdef inline float[:,::1] outer_product_float(float [::1] x, float [::1] y):
     cdef cnp.intp_t i, t, n = x.shape[0]
-    cdef float complex[:, ::1] out = np.zeros((n, n), dtype=np.complex64)
+    cdef float [:, ::1] out = np.zeros((n, n), dtype=np.float32)
     for i in range(n):
         for t in range(n):
             out[i, t] = x[i] * y[t]
     return out
 
+#cdef inline float complex[:,::1] outer_product(float complex[::1] x, float complex[::1] y):
+#    cdef cnp.intp_t i, t, n = x.shape[0]
+#    cdef float complex[:, ::1] out = np.zeros((n, n), dtype=np.complex64)
+#    for i in range(n):
+#        for t in range(n):
+#            out[i, t] = x[i] * y[t]
+#    return out
 
-cdef inline float complex[:,::1] divide_elementwise(float complex[:, ::1] x, float complex[:, ::1] y):
+cdef inline float complex[:,::1] divide_elementwise_float(float complex[:, ::1] x, float [:, ::1] y):
     cdef cnp.intp_t i, t
     cdef cnp.intp_t n1 = x.shape[0]
     cdef cnp.intp_t n2 = x.shape[1]
@@ -290,21 +295,35 @@ cdef inline float complex[:,::1] divide_elementwise(float complex[:, ::1] x, flo
             if x[i, t] == 0:
                 out[i, t] = 0
             else:
-                out[i, t] = x[i, t] / y[i, t]
+                out[i, t] = (cabsf(x[i, t]) / y[i, t]) * cexpf(1j * cargf(x[i, t]))
     return out
+
+#cdef inline float complex[:,::1] divide_elementwise(float complex[:, ::1] x, float complex[:, ::1] y):
+#    cdef cnp.intp_t i, t
+#    cdef cnp.intp_t n1 = x.shape[0]
+#    cdef cnp.intp_t n2 = x.shape[1]
+#    cdef float complex[:, ::1] out = np.zeros((n1, n2), dtype=np.complex64)
+#    for i in range(n1):
+#        for t in range(n2):
+#            if x[i, t] == 0:
+#                out[i, t] = 0
+#            else:
+#                out[i, t] = x[i, t] / y[i, t]
+#    return out
 
 cdef inline float complex[:, ::1] cov2corr_cy(float complex[:,::1] cov_matrix):
     """ Converts covariance matrix to correlation/coherence matrix. """
     cdef cnp.intp_t i, n = cov_matrix.shape[0]
-    cdef float complex[::1] v = np.zeros(n, dtype=np.complex64)
-    cdef float complex[:, ::1] outer_v, corr_matrix
+    cdef float [::1] v = np.zeros(n, dtype=np.float32)
+    cdef float [:, ::1] outer_v
+    cdef float complex[:, ::1] corr_matrix
 
     for i in range(n):
-        v[i] = csqrtf(cov_matrix[i, i])
+        v[i] = sqrtf(cabsf(cov_matrix[i, i]))
 
-    outer_v = outer_product(v, v)
+    outer_v = outer_product_float(v, v)
 
-    corr_matrix = divide_elementwise(cov_matrix, outer_v)
+    corr_matrix = divide_elementwise_float(cov_matrix, outer_v)
 
     return corr_matrix
 
@@ -397,6 +416,7 @@ cdef inline float complex[::1] squeeze_images(float complex[::1] x, float comple
     for t in range(s):
         for i in range(n - step):
             out[t] += ccg[i + step, t] * conjf(vm[i])
+        out[t] = out[t]/(n-step)
 
     return out
 
@@ -829,8 +849,6 @@ def process_patch_c(cnp.ndarray[int, ndim=1] box, int range_window, int azimuth_
                     bytes phase_linking_method, int total_num_mini_stacks, int default_mini_stack_size,
                     bytes shp_test, bytes out_dir):
 
-    #cdef int[::1] def_sample_rows = def_sample_rows_i
-    #cdef int[::1] def_sample_cols = def_sample_cols_i
     cdef cnp.ndarray[int, ndim=1] big_box = get_big_box_cy(box, range_window, azimuth_window, width, length)
     cdef int box_width = box[2] - box[0]
     cdef int box_length = box[3] - box[1]
@@ -849,7 +867,7 @@ def process_patch_c(cnp.ndarray[int, ndim=1] box, int range_window, int azimuth_
     cdef int noval, num_points, num_shp, i, t, p, m = 0
     cdef (int, int) data
     cdef int[:, ::1] shp
-    cdef cnp.ndarray[float complex, ndim=3] patch_slc_images = slcStackObj.read(datasetName='slc', box=big_box)
+    cdef cnp.ndarray[float complex, ndim=3] patch_slc_images = slcStackObj.read(datasetName='slc', box=big_box, print_msg=False)
     cdef float complex[:, ::1] CCG, coh_mat, squeezed_images
     cdef float complex[::1] vec_refined
     cdef float[::1] amp_refined
@@ -858,6 +876,7 @@ def process_patch_c(cnp.ndarray[int, ndim=1] box, int range_window, int azimuth_
     cdef object prog_bar
     cdef bytes out_folder
     cdef int index = box[4]
+    cdef float time0 = time.time()
 
     out_folder = out_dir + ('/PATCHES/PATCH_{}'.format(index)).encode('UTF-8')
     os.makedirs(out_folder.decode('UTF-8'), exist_ok=True)
@@ -871,7 +890,6 @@ def process_patch_c(cnp.ndarray[int, ndim=1] box, int range_window, int azimuth_
             m += 1
 
     num_points = m
-
     prog_bar = ptime.progressBar(maxValue=num_points)
     p = 0
     for i in range(num_points):
@@ -915,12 +933,14 @@ def process_patch_c(cnp.ndarray[int, ndim=1] box, int range_window, int azimuth_
 
         quality[data[0] - row1, data[1] - col1] = temp_quality
 
-        prog_bar.update(p + 1, every=10, suffix='{}/{} pixels'.format(p + 1, num_points))
+        prog_bar.update(p + 1, every=500, suffix='{}/{} pixels, patch {}'.format(p + 1, num_points, index))
         p += 1
 
-    np.save(out_folder.decode('UTF-8') + '/rslc_ref.npy', rslc_ref)
+    np.save(out_folder.decode('UTF-8') + '/phase_ref.npy', rslc_ref)
     np.save(out_folder.decode('UTF-8') + '/shp.npy', SHP)
     np.save(out_folder.decode('UTF-8') + '/quality.npy', quality)
+
+    print('    Phase invertion of PATCH_{} is Completed in {} s\n'.format(index, time.time()-time0))
 
     return
 

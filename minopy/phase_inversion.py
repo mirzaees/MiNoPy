@@ -6,20 +6,16 @@ import os
 import sys
 import logging
 import warnings
+import time
+import datetime
+import numpy as np
 
 warnings.filterwarnings("ignore")
-
-#mpl_logger = logging.getLogger('matplotlib')
-#mpl_logger.setLevel(logging.WARNING)
 
 fiona_logger = logging.getLogger('fiona')
 fiona_logger.propagate = False
 
-import time
-import numpy as np
-
 from minopy.objects.arg_parser import MinoPyParser
-#from mpi4py import MPI
 from minopy.lib import utils as iut
 from minopy.lib import invert as iv
 from math import ceil
@@ -37,14 +33,36 @@ def main(iargs=None):
         Phase linking process.
     '''
 
-
     Parser = MinoPyParser(iargs, script='phase_inversion')
     inps = Parser.parse()
 
+    dateStr = datetime.datetime.strftime(datetime.datetime.now(), '%Y%m%d:%H%M%S')
+
+    if not iargs is None:
+        msg = os.path.basename(__file__) + ' ' + ' '.join(iargs[:])
+        string = dateStr + " * " + msg
+        print(string)
+    else:
+        sysargv = ['./inputs/slcStack.h5' if x == '/tmp/slcStack.h5' else x for x in sys.argv[1::]]
+        msg = os.path.basename(__file__) + ' ' + ' '.join(sysargv)
+        string = dateStr + " * " + msg
+        print(string)
+
     inversionObj = iv.CPhaseLink(inps)
+    if not inps.sub_index is None:
+        inps.sub_index = int(inps.sub_index)
+        indx1 = int(inps.sub_index * inps.num_worker)
+        indx2 = int((inps.sub_index + 1) * inps.num_worker) + 1
+        if indx2 > len(inversionObj.box_list):
+            indx2 = len(inversionObj.box_list)
+        print('Total number of PATCHES for job {} : {}'.format(inps.sub_index, indx2-indx1))
+    else:
+        indx1 = 0
+        indx2 = len(inversionObj.box_list)
+        print('Total number of PATCHES: {}'.format(len(inversionObj.box_list)))
 
     box_list = []
-    for box in inversionObj.box_list:
+    for box in inversionObj.box_list[indx1:indx2]:
         index = box[4]
         out_dir = inversionObj.out_dir.decode('UTF-8')
         out_folder = out_dir + '/PATCHES/PATCH_{}'.format(index)
@@ -52,11 +70,16 @@ def main(iargs=None):
         if not os.path.exists(out_folder + '/quality.npy'):
             box_list.append(box)
 
+    #print('Total number of PATCHES: {}'.format(len(inversionObj.box_list)))
+    print('Remaining number of PATCHES: {}'.format(len(box_list)))
+
     num_workers = int(inps.num_worker)
     cpu_count = mp.cpu_count()
     if num_workers > cpu_count:
         print('Maximum number of Workers is {}\n'.format(cpu_count))
         num_cores = cpu_count
+    elif num_workers < len(box_list) < cpu_count:
+        num_cores = len(box_list)
     else:
         num_cores = num_workers
     
@@ -83,6 +106,7 @@ def main(iargs=None):
                    def_sample_cols=data_kwargs['def_sample_cols'],
                    out_dir=data_kwargs['out_dir'])
 
+    print('Reading SLC data from {} and inverting patches in parallel ...'.format(inps.slc_stack))
     try:
         pool.map(func, box_list)
         pool.close()
@@ -92,7 +116,15 @@ def main(iargs=None):
         pool.terminate()
         pool.join()
 
-    inversionObj.unpatch()
+    if indx2 == len(inversionObj.box_list):
+        for box in inversionObj.box_list:
+            index = box[4]
+            out_dir = inversionObj.out_dir.decode('UTF-8')
+            out_folder = out_dir + '/PATCHES/PATCH_{}'.format(index)
+            while not os.path.exists(out_folder + '/quality.npy'):
+                time.sleep(10)
+
+        inversionObj.unpatch()
 
     return None
 
