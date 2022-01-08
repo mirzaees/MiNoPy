@@ -29,14 +29,15 @@ def cmd_line_parse(iargs=None):
 def find_baselines(iargs=None):
     inps = cmd_line_parse(iargs)
 
-    baselines, dates = get_baselines_dict(inps.baseline_dir)
+    baselines, dates0 = get_baselines_dict(inps.baseline_dir)
     with open(inps.date_list, 'r') as f:
         date_list = f.readlines()
         date_list = [dd.split('\n')[0] for dd in date_list]
 
-    for i, date in enumerate(dates):
-        if not date in date_list:
-            del dates[i]
+    dates = []
+    for date in dates0:
+        if date in date_list:
+            dates.append(date)
 
     dates = np.sort(dates)
 
@@ -163,7 +164,7 @@ def plot_baselines(ind1, ind2, dates=None, baselines=None, out_dir=None, baselin
     ax.xaxis.set_minor_locator(months)
     ax.autoscale_view()
 
-    fig.savefig(out_dir + '/unwrap_network.png', bbox_inches='tight', dpi=150)
+    fig.savefig(out_dir + '/network.pdf', bbox_inches='tight', dpi=150)
     plt.close(fig)
 
     return

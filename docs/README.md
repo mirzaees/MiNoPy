@@ -1,4 +1,6 @@
-[![Language](https://img.shields.io/badge/python-3.5%2B-blue.svg)](https://www.python.org/)
+[![Language](https://img.shields.io/badge/python-3.6%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-GPLv3-yellow.svg)](https://github.com/geodesymiami/MiNoPy/blob/main/LICENSE)
+[![Version](https://img.shields.io/badge/version-v0.2.0-yellowgreen.svg)](https://github.com/geodesymiami/MiNoPy/releases)
 
 
 ## MiNoPy ##
@@ -26,8 +28,8 @@ examples:
 
 ```
 - minopyApp.py template_file
-- minopyApp.py template_file --start load_slc --stop unwrap
-- minopyApp.py template_file --dostep ifgram
+- minopyApp.py template_file --start load_slc --stop unwrap_ifgram
+- minopyApp.py template_file --dostep generate_ifgram
 ```
 
 Use `minopyApp.py template_file --runfiles` to create run files, you may then run them one by one manually
@@ -46,15 +48,17 @@ Area: Pichincha volcano, Ecuador\
 Dataset: Sentinel-1 Descending Track 142, 46 acquisitions, 2016.04.19 - 2017.12.28\
 Size: ~318 Mb\
 ```
-wget https://zenodo.org/record/5167298/files/PichinchaSenDT142.zip
+wget https://zenodo.org/record/5214439/files/PichinchaSenDT142.zip
 unzip PichinchaSenDT142.zip
 cd PichinchaSenDT142
 minopyApp.py PichinchaSenDT142.template --dir ./minopy
 ```
 
-#### Example tutorial in jupyter notebook [nbviewer](https://nbviewer.jupyter.org/github/geodesymiami/MiNoPy/blob/main/tutorial/minopyApp.ipynb)
+#### Example tutorial in jupyter notebook [nbviewer](https://nbviewer.org/github/geodesymiami/MiNoPy_notebooks/blob/main/minopyApp.ipynb)
 
-[Guide for University of Miami HPC users](./HPC_Users.md)
+#### [Brief description of the steps](https://github.com/geodesymiami/MiNoPy/blob/main/docs/steps_guide.md)
+
+#### [Guide for HPC users](./HPC_Users.md)
 
 ### 3. Contribution ###
 Please follow the [guidelines](./CONTRIBUTING.md) for contributing to the code

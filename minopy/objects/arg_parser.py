@@ -5,13 +5,11 @@
 ###############################################################################
 import sys
 import argparse
-from minopy.defaults import auto_path
-from minopy.defaults.auto_path import autoPath, PathFind
 import minopy
-import mintpy
+from minopy.defaults import auto_path
 import os
 import datetime
-pathObj = PathFind()
+pathObj = auto_path.PathFind()
 
 CLUSTER_LIST = ['lsf', 'pbs', 'slurm', 'local']
 
@@ -33,8 +31,6 @@ class MinoPyParser:
 
         if self.script == 'load_slc':
             self.parser = self.load_slc_parser()
-        elif self.script == 'crop_images':
-            self.parser = self.crop_images_parser()
         elif self.script == 'phase_inversion':
             self.parser = self.phase_inversion_parser()
         elif self.script == 'generate_interferograms':
@@ -43,8 +39,10 @@ class MinoPyParser:
             self.parser = self.generate_unwrap_mask_parser()
         elif self.script == 'unwrap_minopy':
             self.parser = self.unwrap_parser()
-        elif self.script == 'phase_to_range':
-            self.parser = self.phase_to_range_parser()
+        elif self.script == 'generate_temporal_coherence':
+            self.parser = self.generate_temporal_coherence_parser()
+        elif self.script == 'network_inversion':
+            self.parser = self.network_inversion_parser()
         elif self.script == 'minopy_app':
             self.parser, self.STEP_LIST, EXAMPLE = self.minopy_app_parser()
 
@@ -84,7 +82,9 @@ class MinoPyParser:
 
         inps.project_dir = os.path.abspath(inps.project_dir)
         inps.PROJECT_NAME = os.path.basename(inps.project_dir)
-        inps.work_dir = os.path.join(inps.project_dir, 'minopy')
+        #inps.work_dir = os.path.join(inps.project_dir, 'minopy')
+        if inps.work_dir == 'minopy':
+            inps.work_dir = os.path.abspath(os.path.join(inps.project_dir, inps.work_dir))
         os.makedirs(inps.work_dir, exist_ok=True)
         inps.out_dir = os.path.join(inps.work_dir, 'inputs')
         os.makedirs(inps.out_dir, exist_ok=True)
@@ -223,6 +223,8 @@ class MinoPyParser:
         minopy.load.autoPath       = auto    # [yes, no] auto for no
         
         minopy.load.slcFile        = auto  #[path2slc_file]
+        minopy.load.startDate      = auto  #auto for first date
+        minopy.load.endDate        = auto  #auto for last date
         ##---------for ISCE only:
         minopy.load.metaFile       = auto  #[path2metadata_file], i.e.: ./reference/IW1.xml, ./referenceShelve/data.dat
         minopy.load.baselineDir    = auto  #[path2baseline_dir], i.e.: ./baselines
@@ -257,9 +259,11 @@ class MinoPyParser:
         parser.add_argument('-t', '--template', type=str, nargs='+',
                             dest='template_file', help='Template file with path info.')
 
-        parser.add_argument('--project_dir', type=str, dest='project_dir',
+        parser.add_argument('-pj', '--project_dir', type=str, dest='project_dir',
                             help='Project directory of SLC dataset to read from')
-        parser.add_argument('--processor', type=str, dest='processor',
+        parser.add_argument('-d', '--work_dir', type=str, dest='work_dir', default='minopy',
+                            help='Working directory of minopy (default ./minopy)')
+        parser.add_argument('-pr', '--processor', type=str, dest='processor',
                             choices={'isce', 'gamma', 'roipac'},
                             help='InSAR processor/software of the file (This version only supports isce)',
                             default='isce')
@@ -277,61 +281,34 @@ class MinoPyParser:
                             help='Output HDF5 file')
         return parser
 
-    @staticmethod
-    def crop_images_parser():
-
-        TEMPLATE = """template: 
-                ##---------subset (optional):
-                ## if both yx and lalo are specified, use lalo option unless a) no lookup file AND b) dataset is in radar coord
-                mintpy.subset.yx   = auto    #[1800:2000,700:800 / no], auto for no
-                mintpy.subset.lalo = auto    #[31.5:32.5,130.5:131.0 / no], auto for no
-                """
-
-        EXAMPLE = """example:
-              crop_images.py -t GalapagosSenDT128.tempalte --slc_dir ./merged/SLC --geometry_dir ./merged/geom_reference 
-              crop_images.py -t GalapagosSenDT128.tempalte --slc_dir ./merged/SLC --geometry_dir ./merged/geom_reference --output_dir ./merged_crop 
-            """
-
-        parser = argparse.ArgumentParser(description='Crop a subset of all input files and save to output dir given the subset in template file',
-                                         formatter_class=argparse.RawTextHelpFormatter,
-                                         epilog=TEMPLATE + '\n' + EXAMPLE)
-        parser.add_argument('-H', dest='print_example_template', action='store_true',
-                            help='Print/Show the example template file for loading.')
-        parser.add_argument('-t', '--template', type=str, nargs='+',
-                            dest='template_file', help='Template file with path info.')
-        parser.add_argument('-s', '--slc_dir', type=str, dest='slc_dir',
-                            default='./merged/SLC', help='Directory of co-registered full SLCs')
-        parser.add_argument('-g', '--geometry_dir', type=str, dest='geometry_dir',
-                            default='./merged/geom_reference', help='Directory of full geometry files')
-        parser.add_argument('--processor', type=str, dest='processor',
-                            choices={'isce', 'gamma', 'roipac'},
-                            help='InSAR processor/software of the file (This version only supports isce)',
-                            default='isce')
-        parser.add_argument('-o', '--output_dir', type=str, dest='out_dir',
-                            default='./merged_crop', help='Output directory for cropped files')
-        return parser
-
     def phase_inversion_parser(self):
         parser = self.parser
         patch = parser.add_argument_group('Phase inversion option')
         patch.add_argument('-w', '--work_dir', type=str, dest='work_dir', help='Working directory (minopy)')
-        patch.add_argument('-r', '--range_window', type=str, dest='range_window', default=15,
+        patch.add_argument('-r', '--range_window', type=int, dest='range_window', default=15,
                            help='Range window size for shp finding')
-        patch.add_argument('-a', '--azimuth_window', type=str, dest='azimuth_window', default=15,
+        patch.add_argument('-a', '--azimuth_window', type=int, dest='azimuth_window', default=15,
                            help='Azimuth window size for shp finding')
         patch.add_argument('-m', '--method', type=str, dest='inversion_method', default='EMI',
                            help='Inversion method (EMI, EVD, PTA, sequential_EMI, ...)')
+        patch.add_argument('-l', '--time_lag', type=int, dest='time_lag', default=10,
+                           help='Time lag in case StBAS is used')
         patch.add_argument('-t', '--test', type=str, dest='shp_test', default='ks',
                            help='Shp statistical test (ks, ad, ttest)')
-        patch.add_argument('-p', '--patch_size', type=str, dest='patch_size', default=200,
+        patch.add_argument('-psn', '--ps_num_shp', type=int, dest='ps_shp', default=10,
+                           help='Number of SHPs for PS candidates')
+        patch.add_argument('-p', '--patch_size', type=int, dest='patch_size', default=200,
                            help='Azimuth window size for shp finding')
-        patch.add_argument('-ms', '--mini_stack_size', type=int, dest='ministack_size', default=10,
+        patch.add_argument('-mss', '--mini_stack_size', type=int, dest='ministack_size', default=10,
                            help='Number of images in each mini stack')
         patch.add_argument('-s', '--slc_stack', type=str, dest='slc_stack', help='SLC stack file')
+        patch.add_argument('-ms', '--mask', type=str, dest='mask_file', default='None', help='mask file for inversion')
         patch.add_argument('-n', '--num_worker', dest='num_worker', type=int, default=1,
                            help='Number of parallel tasks (default: 1)')
         patch.add_argument('-i', '--index', dest='sub_index', type=str, default=None,
                            help='The list containing patches of i*num_worker:(i+1)*num_worker')
+        patch.add_argument('-c', '--concatenate', dest='do_concatenate', action='store_false',
+                           help='Concatenate all phase inverted patches')
 
 
         return parser
@@ -345,6 +322,8 @@ class MinoPyParser:
                             help='Custom mask in HDF5 format')
         parser.add_argument('-o', '--output', type=str, dest='output_mask', default=None,
                             help='Output binary mask for unwrapping with snaphu')
+        #parser.add_argument('-q', '--quality_type', type=str, dest='quality_type', default='full',
+        #                    help='Temporal coherence type (full or average from mini-stacks)')
         parser.add_argument('-t', '--text_cmd', type=str, dest='text_cmd', default='',
                             help='Command before calling any script. exp: singularity run dockerimage.sif')
 
@@ -373,6 +352,7 @@ class MinoPyParser:
 
         return parser
 
+
     @staticmethod
     def unwrap_parser():
         parser = argparse.ArgumentParser(description='Unwrap using snaphu')
@@ -400,28 +380,44 @@ class MinoPyParser:
                             help='Maximum abrupt phase discontinuity (cycles)')
         parser.add_argument('-nt', '--num_tiles', dest='num_tiles', type=int, default=1,
                             help='Number of tiles for Unwrapping in parallel')
+        parser.add_argument('--two-stage', dest='unwrap_2stage', action='store_true',
+                            help='Use 2 stage unwrapping (from ISCE)')
+        parser.add_argument('--rmfilter', dest='remove_filter_flag', action='store_true',
+                            help='Remove filtering after unwrap')
+        parser.add_argument('--tmp', dest='copy_to_tmp', action='store_true', help='Copy and process on tmp')
 
         return parser
 
     @staticmethod
-    def phase_to_range_parser():
+    def generate_temporal_coherence_parser():
         parser = argparse.ArgumentParser(description='Convert phase to range time series')
         parser.add_argument('-d', '--work_dir', type=str, dest='work_dir', required=True,
                             help='Working directory (minopy)')
         return parser
 
     @staticmethod
+    def network_inversion_parser():
+        parser = argparse.ArgumentParser(description='Convert phase to range time series')
+        parser.add_argument('-d', '--work_dir', type=str, dest='work_dir', required=True,
+                            help='Working directory (minopy)')
+        parser.add_argument('-t', '--template', dest='template_file', type=str, default=None,
+                            help='template file (default: smallbaselineApp.cfg)')
+
+        return parser
+
+    @staticmethod
     def minopy_app_parser():
 
         STEP_LIST = [
-            'load_slc',
-            'inversion',
-            'ifgram',
-            'unwrap',
+            'load_slc_geometry',
+            'phase_inversion',
+            'concatenate_patch',
+            'generate_ifgram',
+            'unwrap_ifgram',
             'load_ifgram',
-            'correct_unwrap_error',
-            'phase_to_range',
-            'mintpy_corrections']
+            'ifgram_correction',
+            'network_inversion',
+            'timeseries_correction']
 
 
         STEP_HELP = """Command line options for steps processing with names are chosen from the following list:
@@ -440,7 +436,7 @@ class MinoPyParser:
               # Run with --start/stop/step options
               minopyApp.py PichinchaSenDT142.template --dostep  load_slc       # run the step 'download' only
               minopyApp.py PichinchaSenDT142.template --start load_slc         # start from the step 'download' 
-              minopyApp.py PichinchaSenDT142.template --stop  unwrap           # end after step 'interferogram'
+              minopyApp.py PichinchaSenDT142.template --stop  unwrap_ifgram    # end after step 'interferogram'
               """
         parser = argparse.ArgumentParser(description='Routine Time Series Analysis for MiNoPy',
                                          formatter_class=argparse.RawTextHelpFormatter,
@@ -461,6 +457,10 @@ class MinoPyParser:
         parser.add_argument('--walltime', dest='wall_time', default=None,
                              help='walltime for submitting the script as a job')
         parser.add_argument('--queue', dest='queue', default=None, help='Queue name')
+        parser.add_argument('--jobfiles', dest='write_job', action='store_true',
+                          help='Do not run the tasks, only write job files')
+        parser.add_argument('--runfiles', dest='run_flag', action='store_true', help='Create run files for all steps')
+        parser.add_argument('--tmp', dest='copy_to_tmp', action='store_true', help='Copy and process on tmp')
 
         step = parser.add_argument_group('steps processing (start/end/dostep)', STEP_HELP)
         step.add_argument('--start', dest='startStep', metavar='STEP', default=STEP_LIST[0],
@@ -469,9 +469,7 @@ class MinoPyParser:
                           help='End processing at the named step, default: {}'.format(STEP_LIST[-1]))
         step.add_argument('--dostep', dest='doStep', metavar='STEP',
                           help='Run processing at the named step only')
-        step.add_argument('--jobfiles', dest='write_job', action='store_true',
-                          help='Do not run the tasks, only write job files')
-        step.add_argument('--runfiles', dest='run_flag', action='store_true', help='Create run files for all steps')
+
 
         return parser, STEP_LIST, EXAMPLE
 

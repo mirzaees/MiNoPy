@@ -11,7 +11,7 @@ import h5py
 from osgeo import gdal
 import datetime
 import re
-import minopy
+import numpy as np
 from minopy.objects.arg_parser import MinoPyParser
 from mintpy.utils import readfile
 from mintpy.objects import (
@@ -445,24 +445,29 @@ def check_template_auto_value(templateDict, mintpyTemplateDict=None, auto_file='
         if value == 'auto' and key in templateAutoDict.keys():
             templateDict[key] = templateAutoDict[key]
 
-    common_keys = ['load.autoPath', 'load.processor', 'load.updateMode', 'load.compression']
+    common_keys = ['load.autoPath', 'load.compression']
 
     if not mintpyTemplateDict is None:
         status = 'skip'
 
-        if not templateDict['minopy.subset.lalo'] and not templateDict['minopy.subset.yx']:
-            if mintpyTemplateDict['mintpy.subset.lalo']:
+        if templateDict['minopy.subset.lalo'] == 'no' and templateDict['minopy.subset.yx'] == 'no':
+            if not mintpyTemplateDict['mintpy.subset.lalo'] == 'no':
                 templateDict['minopy.subset.lalo'] = mintpyTemplateDict['mintpy.subset.lalo']
                 status = 'run'
-            if mintpyTemplateDict['mintpy.subset.yx']:
+            if not mintpyTemplateDict['mintpy.subset.yx'] == 'no':
                 templateDict['minopy.subset.yx'] = mintpyTemplateDict['mintpy.subset.yx']
                 status = 'run'
 
         for key in common_keys:
-            if not templateDict['minopy.' + key]:
-                if mintpyTemplateDict['mintpy.' + key]:
+            if templateDict['minopy.' + key] == 'no':
+                if not mintpyTemplateDict['mintpy.' + key] == 'no':
                     templateDict['minopy.' + key] = mintpyTemplateDict['mintpy.' + key]
                     status = 'run'
+
+        if not templateDict['minopy.load.processor'] == mintpyTemplateDict['mintpy.load.processor']:
+            if templateDict['minopy.load.processor'] == 'isce':
+                templateDict['minopy.load.processor'] = mintpyTemplateDict['mintpy.load.processor']
+            status = 'run'
 
         common_keys = ['minopy.' + key for key in common_keys] + ['minopy.subset.lalo', 'minopy.subset.yx']
 
@@ -993,6 +998,7 @@ def get_latest_template_minopy(work_dir):
     """
     lfile = os.path.join(os.path.dirname(__file__), '../defaults/minopyApp.cfg')  # latest version
     cfile = os.path.join(work_dir, 'minopyApp.cfg')  # current version
+
     if not os.path.isfile(cfile):
         print('copy default template file {} to work directory'.format(lfile))
         shutil.copy2(lfile, work_dir)
@@ -1076,12 +1082,12 @@ def read_initial_info(work_dir, templateFile):
 
         Parser_LoadSlc = MinoPyParser(scp_args.split(), script='load_slc')
         inps_loadSlc = Parser_LoadSlc.parse()
-        iDict = minopy.load_slc.read_inps2dict(inps_loadSlc)
-        minopy.load_slc.prepare_metadata(iDict)
-        metadata = minopy.load_slc.read_subset_box(iDict)
+        iDict = minopy.load_slc_geometry.read_inps2dict(inps_loadSlc)
+        minopy.load_slc_geometry.prepare_metadata(iDict)
+        metadata = minopy.load_slc_geometry.read_subset_box(iDict)
         box = metadata['box']
         num_pixels = (box[2] - box[0]) * (box[3] - box[1])
-        stackObj = minopy.load_slc.read_inps_dict2slc_stack_dict_object(iDict)
+        stackObj = minopy.load_slc_geometry.read_inps_dict2slc_stack_dict_object(iDict)
         date_list = stackObj.get_date_list()
 
     return date_list, num_pixels, metadata

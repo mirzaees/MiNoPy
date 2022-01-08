@@ -10,10 +10,8 @@ from libc.stdio cimport printf
 from minopy.objects.slcStack import slcStack
 import h5py
 import time
-from mintpy.objects import cluster
 from isceobj.Util.ImageUtil import ImageLib as IML
-import multiprocessing as mp
-from functools import partial
+
 
 
 cdef void write_wrapped(list date_list, bytes out_dir, int width, int length, bytes RSLCfile, bytes date):
@@ -63,20 +61,24 @@ cdef class CPhaseLink:
         cdef float alpha
         self.inps = inps
         self.work_dir = inps.work_dir.encode('UTF-8')
+        self.mask_file = inps.mask_file.encode('UTF-8')
         self.phase_linking_method = inps.inversion_method.encode('UTF-8')
         self.shp_test = inps.shp_test.encode('UTF-8')
         self.slc_stack = inps.slc_stack.encode('UTF-8')
         self.range_window = np.int32(inps.range_window)
         self.azimuth_window = np.int32(inps.azimuth_window)
         self.patch_size = np.int32(inps.patch_size)
-
+        self.ps_shp = np.int32(inps.ps_shp)
         self.out_dir = self.work_dir + b'/inverted'
         os.makedirs(self.out_dir.decode('UTF-8'), exist_ok='True')
 
         self.slcStackObj = slcStack(inps.slc_stack)
         self.metadata = self.slcStackObj.get_metadata()
         self.all_date_list = self.slcStackObj.get_date_list()
+        with h5py.File(inps.slc_stack, 'r') as f:
+            self.prep_baselines = f['bperp'][:]
         self.n_image, self.length, self.width = self.slcStackObj.get_size()
+        self.time_lag = inps.time_lag
 
 
         # total number of neighbouring pixels
@@ -162,7 +164,7 @@ cdef class CPhaseLink:
 
 
     def initiate_output(self):
-        cdef object RSLC
+        cdef object RSLC, psf
 
         with h5py.File(self.RSLCfile.decode('UTF-8'), 'a') as RSLC:
 
@@ -199,19 +201,43 @@ cdef class CPhaseLink:
 
                 RSLC['shp'][:, :] = 1
 
-                RSLC.create_dataset('quality',
-                                    shape=(self.length, self.width),
-                                    maxshape=(self.length, self.width),
+                RSLC.create_dataset('temporalCoherence',
+                                    shape=(2, self.length, self.width),
+                                    maxshape=(2, self.length, self.width),
                                     chunks=True,
                                     dtype=np.float32)
 
-                RSLC['quality'][:, :] = -1
+                RSLC['temporalCoherence'][:, :, :] = -1
 
 
                 # 1D dataset containing dates of all images
                 data = np.array(self.all_date_list, dtype=np.string_)
                 RSLC.create_dataset('date', data=data)
 
+                # 1D dataset containing perpendicular baselines of all images
+                data = np.array(self.prep_baselines, dtype=np.float32)
+                RSLC.create_dataset('bperp', data=data)
+
+        mask_ps_file = self.work_dir + b'/maskPS.h5'
+
+        with h5py.File(mask_ps_file.decode('UTF-8'), 'a') as psf:
+            if not 'mask' in psf.keys():
+                self.metadata['FILE_TYPE'] = 'mask' #'phase'
+                self.metadata['DATA_TYPE'] = 'int32'
+                self.metadata['data_type'] = 'BYTE'
+                self.metadata['description'] = 'PS mask'
+                self.metadata['file_name'] = mask_ps_file.decode('UTF-8')
+                self.metadata['family'] = 'PS mask'
+
+                for key, value in self.metadata.items():
+                    psf.attrs[key] = value
+
+                psf.create_dataset('mask',
+                                    shape=(self.length, self.width),
+                                    maxshape=(self.length, self.width),
+                                    chunks=True,
+                                    dtype=np.int32)
+                psf['mask'][:, :] = 0
 
         return
 
@@ -232,8 +258,11 @@ cdef class CPhaseLink:
             "phase_linking_method" : self.phase_linking_method,
             "total_num_mini_stacks" : self.total_num_mini_stacks,
             "default_mini_stack_size" : self.mini_stack_default_size,
+            'ps_shp': self.ps_shp,
             "shp_test": self.shp_test,
             "out_dir": self.out_dir,
+            "time_lag": self.time_lag,
+            "mask_file": self.mask_file,
         }
         return data_kwargs
 
@@ -256,30 +285,38 @@ cdef class CPhaseLink:
 
     def unpatch(self):
         cdef list block
-        cdef object fhandle
+        cdef object fhandle, psf
         cdef int index
         cdef cnp.ndarray[int, ndim=1] box
         cdef bytes patch_dir
         cdef float complex[:, :, ::1] rslc_ref
-        cdef float[:, ::1] quality
+        cdef cnp.ndarray[float, ndim=3] temp_coh
 
         if os.path.exists(self.RSLCfile.decode('UTF-8')):
             print('Deleting old phase_series.h5 ...')
             os.remove(self.RSLCfile.decode('UTF-8'))
 
+        mask_ps_file = self.work_dir + b'/maskPS.h5'
+        if os.path.exists(mask_ps_file.decode('UTF-8')):
+            os.remove(mask_ps_file.decode('UTF-8'))
+
         self.initiate_output()
-        print('Unpatch and write wrapped phase time series to HDF5 file phase_series.h5 ')
+        print('Concatenate and write wrapped phase time series to HDF5 file phase_series.h5 ')
         print('open  HDF5 file phase_series.h5 in a mode')
 
         with h5py.File(self.RSLCfile.decode('UTF-8'), 'a') as fhandle:
+            
             for index, box in enumerate(self.box_list):
-                patch_dir = self.out_dir + ('/PATCHES/PATCH_{}'.format(index)).encode('UTF-8')
-                rslc_ref = np.load(patch_dir.decode('UTF-8') + '/phase_ref.npy')
-                quality = np.load(patch_dir.decode('UTF-8') + '/quality.npy')
-                shp = np.load(patch_dir.decode('UTF-8') + '/shp.npy')
+                patch_dir = self.out_dir + ('/PATCHES/PATCH_{:04.0f}'.format(index)).encode('UTF-8')
+                rslc_ref = np.load(patch_dir.decode('UTF-8') + '/phase_ref.npy', allow_pickle=True)
+                temp_coh = np.load(patch_dir.decode('UTF-8') + '/tempCoh.npy', allow_pickle=True)
+                shp = np.load(patch_dir.decode('UTF-8') + '/shp.npy', allow_pickle=True)
+                mask_ps = np.load(patch_dir.decode('UTF-8') + '/mask_ps.npy', allow_pickle=True)
+
+                temp_coh[temp_coh<0] = 0
 
                 print('-' * 50)
-                print("unpatch block {}/{} : {}".format(index, self.num_box, box[0:4]))
+                print("Concatenate block {}/{} : {}".format(index, self.num_box, box[0:4]))
 
                 # wrapped interferograms 3D
                 block = [0, self.n_image, box[1], box[3], box[0], box[2]]
@@ -292,42 +329,67 @@ cdef class CPhaseLink:
                 write_hdf5_block_2D_int(fhandle, shp, b'shp', block)
 
                 # temporal coherence - 2D
-                block = [box[1], box[3], box[0], box[2]]
-                write_hdf5_block_2D_float(fhandle, quality, b'quality', block)
+                block = [0, 2, box[1], box[3], box[0], box[2]]
+                write_hdf5_block_3D(fhandle, temp_coh, b'temporalCoherence', block)
 
-
+            
             print('write shp file')
             shp_file = self.work_dir + b'/shp'
 
             if not os.path.exists(shp_file.decode('UTF-8')):
-                shp_memmap = np.memmap(shp_file.decode('UTF-8'), mode='write', dtype='int',
+                shp_memmap = np.memmap(shp_file.decode('UTF-8'), mode='write', dtype='int16',
                                            shape=(self.length, self.width))
                 IML.renderISCEXML(shp_file.decode('UTF-8'), bands=1, nyy=self.length, nxx=self.width,
-                                  datatype='int32', scheme='BIL')
+                                  datatype='int16', scheme='BIL')
             else:
-                shp_memmap = np.memmap(shp_file.decode('UTF-8'), mode='r+', dtype='int',
+                shp_memmap = np.memmap(shp_file.decode('UTF-8'), mode='r+', dtype='int16',
                                            shape=(self.length, self.width))
 
-            shp_memmap[:, :] = fhandle['shp']
+            shp_memmap[:, :] = fhandle['shp'][:, :]
             shp_memmap = None
 
 
-            print('write quality file')
-            quality_file = self.out_dir + b'/quality'
+            print('write averaged temporal coherence file from mini stacks')
+            temp_coh_file = self.out_dir + b'/tempCoh_average'
 
-            if not os.path.exists(quality_file.decode('UTF-8')):
-                quality_memmap = np.memmap(quality_file.decode('UTF-8'), mode='write', dtype='float32',
+            if not os.path.exists(temp_coh_file.decode('UTF-8')):
+                temp_coh_memmap = np.memmap(temp_coh_file.decode('UTF-8'), mode='write', dtype='float32',
                                            shape=(self.length, self.width))
-                IML.renderISCEXML(quality_file.decode('UTF-8'), bands=1, nyy=self.length, nxx=self.width,
+                IML.renderISCEXML(temp_coh_file.decode('UTF-8'), bands=1, nyy=self.length, nxx=self.width,
                                   datatype='float32', scheme='BIL')
             else:
-                quality_memmap = np.memmap(quality_file.decode('UTF-8'), mode='r+', dtype='float32',
+                temp_coh_memmap = np.memmap(temp_coh_file.decode('UTF-8'), mode='r+', dtype='float32',
                                            shape=(self.length, self.width))
 
-            quality_memmap[:, :] = fhandle['quality']
-            quality_memmap = None
+            temp_coh_memmap[:, :] = fhandle['temporalCoherence'][0, :, :]
+            temp_coh_memmap = None
+
+            print('write temporal coherence file from full stack')
+            temp_coh_file = self.out_dir + b'/tempCoh_full'
+
+            if not os.path.exists(temp_coh_file.decode('UTF-8')):
+                temp_coh_memmap = np.memmap(temp_coh_file.decode('UTF-8'), mode='write', dtype='float32',
+                                           shape=(self.length, self.width))
+                IML.renderISCEXML(temp_coh_file.decode('UTF-8'), bands=1, nyy=self.length, nxx=self.width,
+                                  datatype='float32', scheme='BIL')
+            else:
+                temp_coh_memmap = np.memmap(temp_coh_file.decode('UTF-8'), mode='r+', dtype='float32',
+                                           shape=(self.length, self.width))
+
+            temp_coh_memmap[:, :] = fhandle['temporalCoherence'][1, :, :]
+            temp_coh_memmap = None
 
             print('close HDF5 file phase_series.h5.')
+
+        print('write PS mask file')
+
+        with h5py.File(mask_ps_file.decode('UTF-8'), 'a') as psf:
+           for index, box in enumerate(self.box_list):
+               patch_dir = self.out_dir + ('/PATCHES/PATCH_{:04.0f}'.format(index)).encode('UTF-8')
+               mask_ps = np.load(patch_dir.decode('UTF-8') + '/mask_ps.npy', allow_pickle=True)
+               block = [box[1], box[3], box[0], box[2]]
+               write_hdf5_block_2D_int(psf, mask_ps, b'mask', block)
+
         return
 
 
